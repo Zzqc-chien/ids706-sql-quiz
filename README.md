@@ -30,12 +30,17 @@ Tables: `students(student_id, name, program, start_year)`, `courses(course_id, c
 ## How it works
 
 **Database:** Supabase Postgres, connected through the Session pooler with `sslmode=require`. `sql/init.sql` creates everything.
+
 **Auth:** Supabase Auth (email + password).
+
 **App:** Streamlit (`app.py`). Shared logic lives in `quizlib.py`, and the questions live in `questions.json`.
+
 **Two DB roles:**
   - `quiz_reader` runs the taker's SQL. It is read-only (SELECT on the quiz tables only), with a 5 s timeout.
   - `quiz_app` saves answers and writes the audit log. It can INSERT but cannot UPDATE or DELETE.
+
 **RLS** is on for all tables, with policies that match the roles above.
+
 **CI:** `.github/workflows/quiz-db-check.yml` runs on every push and twice a week. It reads the DB credentials from GitHub Secrets and runs `scripts/check_quiz.py`, which runs each hint query and compares it with the expected result. It also checks that the reader can't delete data and that the audit log can't be edited. The scheduled runs also keep the free Supabase project from pausing.
 
 No passwords are in the repo. Locally they live in `.env` (gitignored), in CI they come from GitHub Secrets, and on Streamlit Cloud they come from the app's secrets.
@@ -43,7 +48,9 @@ No passwords are in the repo. Locally they live in `.env` (gitignored), in CI th
 ## Extra credit
 
 **Parameterized queries:** every INSERT/SELECT the app runs itself uses `%s` placeholders (see `quizlib.py`).
+
 **Audit log:** `app.audit_log` records who ran or saved what, the SQL, whether it worked, and when.
+
 **Integrity check:** the log is append-only. Triggers block UPDATE, DELETE, and TRUNCATE for every role, including the owner. For example, `DELETE FROM app.audit_log;` fails with `audit_log is append-only`.
 
 ## Running it yourself
