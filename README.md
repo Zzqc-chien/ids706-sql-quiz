@@ -1,216 +1,69 @@
-# SQL Quiz: Graduate Course Enrollment
+# IDS 706 SQL Quiz
 
-[![Quiz DB check](https://github.com/<your-github-user>/<your-repo>/actions/workflows/quiz-db-check.yml/badge.svg)](https://github.com/<your-github-user>/<your-repo>/actions/workflows/quiz-db-check.yml)
+[![Quiz DB check](https://github.com/Zzqc-chien/ids706-sql-quiz/actions/workflows/quiz-db-check.yml/badge.svg)](https://github.com/Zzqc-chien/ids706-sql-quiz/actions/workflows/quiz-db-check.yml)
 
-**Live quiz:** https://<your-app-name>.streamlit.app
+Quiz site: https://ids706-sql-quiz-chien.streamlit.app
 
-A small SQL quiz that runs against a live, hosted PostgreSQL database. A quiz taker signs in, opens a question, writes a SQL query, runs it, and sees the result table straight from the database. The quiz has 5 questions worth 20 points in total. Each question includes a hint with the expected SQL and the expected result.
+(If the app is asleep, click the wake-up button and give it ~30 seconds.)
 
----
+A 5-question, 20-point SQL quiz that runs against a Supabase Postgres database. The data is a small made-up grad school dataset: students, courses, and enrollments.
 
-## How to take the quiz (for graders)
+## How to take the quiz
 
-1. Open the live quiz URL above.
-2. In the left sidebar, choose **Create account**, enter any email and a password (6+ characters), and click **Create account**. You are signed in immediately (email confirmation is turned off).
-   Returning users use the **Sign in** tab.
-3. Pick a question (Q1–Q5). Expand **Database schema** to see the tables.
-4. Type a query in **Your SQL** and click **▶ Run**. The rows come from the live database.
-5. The app tells you whether your result matches the expected result. Results are compared by value, not by SQL text.
-6. Click **💾 Save** to store your answer. Saved questions show **✔ saved**.
-7. Open **💡 Hint** under a question to see the expected SQL and the expected result.
+1. Open the site and create an account in the sidebar (any email works, no confirmation needed).
+2. Pick a question, write a query, and click Run. The result comes straight from the database.
+3. The app tells you if your result matches the expected one. Only the rows are compared, not the SQL text.
+4. Click Save to store your answer. Each question has a Hint with the expected SQL and result.
 
-Signed-out visitors can read the questions, but **Run** and **Save** are disabled, and the server refuses both actions without a signed-in user.
+Run and Save are disabled until you sign in, and the server checks the login again before it touches the database.
 
-## The quiz
+| Q | Topic | Pts |
+|---|---|---|
+| 1 | WHERE + ORDER BY | 4 |
+| 2 | GROUP BY / COUNT | 4 |
+| 3 | 3-table JOIN | 4 |
+| 4 | GROUP BY + HAVING | 4 |
+| 5 | Window function (RANK, with ties) | 4 |
 
-Topic: a fictional graduate program's students, courses and enrollments.
+Tables: `students(student_id, name, program, start_year)`, `courses(course_id, course_code, title, department, credits)`, `enrollments(enrollment_id, student_id, course_id, term, grade_points)`. A NULL `grade_points` means the course is still in progress.
 
-| # | Question | Skills | Points |
-|---|---|---|---|
-| Q1 | MIDS students sorted by start year and name | SELECT, WHERE, ORDER BY | 4 |
-| Q2 | Number of courses per department | GROUP BY, COUNT | 4 |
-| Q3 | Students enrolled in IDS 706 in Fall 2026 | 3-table JOIN | 4 |
-| Q4 | Students with ≥ 3 completed courses and average ≥ 3.5 | JOIN, GROUP BY, HAVING, ROUND | 4 |
-| Q5 | Top student(s) per course, ties included | CTE, `RANK() OVER (PARTITION BY …)` | 4 |
-| | | **Total** | **20** |
+## How it works
 
-Questions, hints and expected results live in [`questions.json`](questions.json).
+- **Database:** Supabase Postgres, connected through the Session pooler with `sslmode=require`. `sql/init.sql` creates everything.
+- **Auth:** Supabase Auth (email + password).
+- **App:** Streamlit (`app.py`). Shared logic lives in `quizlib.py`, and the questions live in `questions.json`.
+- **Two DB roles:**
+  - `quiz_reader` runs the taker's SQL. It is read-only (SELECT on the quiz tables only), with a 5 s timeout.
+  - `quiz_app` saves answers and writes the audit log. It can INSERT but cannot UPDATE or DELETE.
+- **RLS** is on for all tables, with policies that match the roles above.
+- **CI:** `.github/workflows/quiz-db-check.yml` runs on every push and twice a week. It reads the DB credentials from GitHub Secrets and runs `scripts/check_quiz.py`, which runs each hint query and compares it with the expected result. It also checks that the reader can't delete data and that the audit log can't be edited. The scheduled runs also keep the free Supabase project from pausing.
 
-### Database schema
+No passwords are in the repo. Locally they live in `.env` (gitignored), in CI they come from GitHub Secrets, and on Streamlit Cloud they come from the app's secrets.
 
-| Table | Columns |
-|---|---|
-| `students` | `student_id` (PK), `name`, `program`, `start_year` |
-| `courses` | `course_id` (PK), `course_code`, `title`, `department`, `credits` |
-| `enrollments` | `enrollment_id` (PK), `student_id` → students, `course_id` → courses, `term`, `grade_points` (NULL = in progress) |
+## Extra credit
 
-12 students, 10 courses and 38 enrollments across Fall 2025, Spring 2026 and Fall 2026. The full script is [`sql/init.sql`](sql/init.sql).
+- **Parameterized queries:** every INSERT/SELECT the app runs itself uses `%s` placeholders (see `quizlib.py`).
+- **Audit log:** `app.audit_log` records who ran or saved what, the SQL, whether it worked, and when.
+- **Integrity check:** the log is append-only. Triggers block UPDATE, DELETE, and TRUNCATE for every role, including the owner. For example, `DELETE FROM app.audit_log;` fails with `audit_log is append-only`.
 
----
+## Running it yourself
 
-## Architecture
-
-```mermaid
-flowchart LR
-    user["Quiz taker<br/>(browser)"] --> app["Streamlit app<br/>app.py<br/>(Streamlit Community Cloud)"]
-    app -- "sign up / sign in" --> auth["Supabase Auth"]
-    app -- "taker's SQL<br/>role quiz_reader<br/>read-only" --> pooler["Supabase Session pooler<br/>port 5432, sslmode=require"]
-    app -- "save answer + audit row<br/>role quiz_app<br/>parameterized INSERT" --> pooler
-    pooler --> db[("PostgreSQL<br/>schema quiz: quiz data<br/>schema app: submissions, audit_log")]
-    gha["GitHub Actions<br/>secrets → env vars"] -- "check_quiz.py" --> pooler
-```
-
-| Part | What it is |
-|---|---|
-| Hosted database | Supabase PostgreSQL. Quiz data in schema `quiz`; saved answers and the audit log in schema `app`. |
-| Authentication | Supabase Auth, email + password. The sign-in state lives in the server-side Streamlit session, and `run_query` / `save_answer` check it again before touching the database. |
-| Running SQL | `quizlib.run_readonly()` connects as **`quiz_reader`**, starts a `READ ONLY` transaction, sets a 5 s timeout, runs one `SELECT`/`WITH` statement, returns at most 500 rows and rolls back. |
-| Saving answers | `quizlib.save_submission()` connects as **`quiz_app`** and inserts with `%s` parameters. |
-| GitHub Actions | `.github/workflows/quiz-db-check.yml` runs unit tests, then `scripts/check_quiz.py` against the live database using GitHub Secrets. |
-
-### Security design
-
-- **No passwords in git.** `.env` is in `.gitignore`; `init.sql` creates roles without passwords; CI reads GitHub Secrets; the deployed app reads Streamlit secrets.
-- **Least-privilege roles.**
-
-  | Role | Can do | Cannot do |
-  |---|---|---|
-  | `quiz_reader` | `SELECT` on `quiz.*` | write anything; see schema `app`; run longer than 5 s |
-  | `quiz_app` | `INSERT`, `SELECT` on `app.submissions`, `app.audit_log` | `UPDATE`/`DELETE`/`TRUNCATE`; read the quiz tables |
-
-- **Defense in depth for taker SQL:** one statement only, must start with `SELECT` or `WITH`, read-only transaction, read-only role, and no privileges to write even if read-only mode is switched off.
-- Tables live in custom schemas (`quiz`, `app`), not `public`, so they are not exposed through Supabase's auto-generated REST API.
-
-### Extra credit
-
-| Item | Where |
-|---|---|
-| Parameterized queries (no f-string SQL) | every `INSERT`/`SELECT` in `quizlib.py` uses `%s` placeholders |
-| Audit log of who ran or saved what | `app.audit_log`: user, action (`run`/`save`), question, SQL, success, row count, error, timestamp |
-| Integrity check: takers cannot edit the log | `quiz_app` has no `UPDATE`/`DELETE` privileges, **and** triggers on `app.audit_log` reject every `UPDATE`, `DELETE` and `TRUNCATE`, even from the `postgres` owner. CI verifies this on every run. |
-
-Try it in the Supabase SQL Editor:
-
-```sql
-DELETE FROM app.audit_log;
--- ERROR: audit_log is append-only: DELETE is not allowed
-```
-
----
-
-## Repository layout
-
-```
-.
-├── app.py                         # Streamlit UI: sign-in, questions, Run, Save
-├── quizlib.py                     # settings, SQL checks, DB access, result comparison
-├── questions.json                 # 5 questions, hints, expected results
-├── sql/init.sql                   # schema, seed data, roles, audit-log triggers
-├── scripts/check_quiz.py          # live-database check used by GitHub Actions
-├── tests/test_quizlib.py          # unit tests (no database needed)
-├── .github/workflows/quiz-db-check.yml
-├── requirements.txt
-├── .env.example                   # template; copy to .env (never committed)
-└── .gitignore
-```
-
----
-
-## Set it up yourself
-
-### 1. Supabase project and data
-
-1. Create a free project at <https://supabase.com/dashboard>. Save the database password.
-2. Open **SQL Editor → New query**, paste [`sql/init.sql`](sql/init.sql), and click **Run**.
-3. In a new SQL Editor query (not saved to git), give the two roles passwords:
-
+1. Create a Supabase project and run `sql/init.sql` in the SQL Editor.
+2. Set the role passwords in the SQL Editor. Don't commit these.
    ```sql
-   ALTER ROLE quiz_reader WITH PASSWORD '<strong password 1>';
-   ALTER ROLE quiz_app    WITH PASSWORD '<strong password 2>';
+   ALTER ROLE quiz_reader WITH PASSWORD '...';
+   ALTER ROLE quiz_app    WITH PASSWORD '...';
    ```
-
-   Tip: `openssl rand -hex 20` makes a strong password with no special characters.
-
-4. **Authentication → Sign In / Providers → Email:** keep Email enabled and turn **Confirm email** off, so graders can sign in right after creating an account.
-
-### 2. Run locally
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env        # then fill in your values
-python scripts/check_quiz.py
-streamlit run app.py
-```
-
-Where to find each value:
-
-| Setting | Where in Supabase |
-|---|---|
-| `SUPABASE_URL` | Project Settings → Data API → Project URL |
-| `SUPABASE_KEY` | Project Settings → API Keys → anon / publishable key (never the service_role / secret key) |
-| `DB_HOST` | **Connect** → **Session pooler** → host (e.g. `aws-0-us-east-1.pooler.supabase.com`) |
-| `DB_READER_USER` | `quiz_reader.<project-ref>` |
-| `DB_APP_USER` | `quiz_app.<project-ref>` |
-| `DB_*_PASSWORD` | the passwords from step 1.3 |
-
-`<project-ref>` is the 20-character id in your project URL. The Session pooler needs `role.project-ref` as the user name.
-
-### 3. GitHub Secrets and Actions
-
-Repository **Settings → Secrets and variables → Actions → New repository secret**:
-
-`DB_HOST`, `DB_READER_USER`, `DB_READER_PASSWORD`, `DB_APP_USER`, `DB_APP_PASSWORD`
-
-The workflow runs on every push to `main`, on pull requests, on demand (**Actions → Quiz DB check → Run workflow**) and twice a week. The scheduled runs also stop the free Supabase project from pausing after a week of inactivity.
-
-What it checks:
-
-1. Unit tests for the SQL guard and result comparison.
-2. Points add up to 20 and every question has a hint.
-3. Every hint query returns exactly the expected rows from the live database.
-4. `quiz_reader` cannot delete data.
-5. The audit log rejects updates.
-
-### 4. Deploy
-
-1. Push the repo to GitHub.
-2. At <https://share.streamlit.io>, click **Create app**, pick this repo, branch `main`, file `app.py`.
-3. Under **Advanced settings → Secrets**, paste the same values as your `.env` in TOML form:
-
-   ```toml
-   SUPABASE_URL = "https://<ref>.supabase.co"
-   SUPABASE_KEY = "<anon key>"
-   DB_HOST = "aws-0-<region>.pooler.supabase.com"
-   DB_PORT = "5432"
-   DB_NAME = "postgres"
-   DB_SSLMODE = "require"
-   DB_READER_USER = "quiz_reader.<ref>"
-   DB_READER_PASSWORD = "<password>"
-   DB_APP_USER = "quiz_app.<ref>"
-   DB_APP_PASSWORD = "<password>"
+3. In Authentication settings, turn off "Confirm email".
+4. Copy `.env.example` to `.env` and fill it in. Use the Session pooler host, and the user names `quiz_reader.<project-ref>` / `quiz_app.<project-ref>`.
+5. Install and run:
+   ```bash
+   python3 -m venv .venv && source .venv/bin/activate
+   pip install -r requirements.txt
+   python scripts/check_quiz.py   # should print "All checks passed."
+   streamlit run app.py
    ```
+6. For CI, add these repo secrets: `DB_HOST`, `DB_READER_USER`, `DB_READER_PASSWORD`, `DB_APP_USER`, `DB_APP_PASSWORD`.
+7. To deploy, create an app on share.streamlit.io from this repo (`app.py`) and paste the `.env` values into its Secrets, in TOML format.
 
-4. Deploy, then put the app URL at the top of this README.
-
-### Changing the quiz
-
-Edit `sql/init.sql` (data) or `questions.json` (questions and hint SQL), re-run `init.sql` in Supabase, then refresh the expected results from the database:
-
-```bash
-python scripts/check_quiz.py --write
-```
-
----
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `password authentication failed` / `Tenant or user not found` | The user must be `quiz_reader.<project-ref>`, and the host must be the **Session pooler** host of your project's region. |
-| `connection timed out` | You used the Direct connection host (`db.<ref>.supabase.co`). Use the Session pooler. |
-| `SSL connection is required` | Set `DB_SSLMODE=require`. |
-| `relation "students" does not exist` | Run `sql/init.sql` in the SQL Editor. |
-| Sign-up says "check your email" | Turn off **Confirm email** (setup step 1.4). |
-| Site cannot connect after a week | The free project paused. Restore it in the dashboard; the scheduled workflow prevents this. |
+If you change the data or questions, re-run `init.sql` and then run `python scripts/check_quiz.py --write` to refresh the expected answers.
